@@ -1,4 +1,4 @@
-package org.example
+package org.yiyit
 
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.SparkSession
