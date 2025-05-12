@@ -1,0 +1,13 @@
+# Default ignored files
+/shelf/
+/workspace.xml
+/.settings/
+/.classpath
+/.project
+/dependency-reduced-pom.xml
+/target/
+/.idea/
+**/target/**
+*.iml
+**/.idea/**
+.DS_store
