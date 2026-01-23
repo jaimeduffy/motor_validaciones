@@ -6,43 +6,42 @@ import java.util.Properties
 object App {
   def main(args: Array[String]): Unit = {
 
-    // Iniciamos la sesión de Spark
     val spark = SparkSession.builder()
       .appName("ValidacionBigData")
       .master("local[*]")
       .getOrCreate()
 
-    // Cargamos el archivo de configuración (application.properties)
-    val url = getClass.getResource("/application.properties")
-    if (url == null) {
-      println("ERROR: No se ha encontrado el archivo application.properties en resources")
+    // Cargar el fichero application.properties
+    val props = new Properties()
+    val propertiesFile = getClass.getResourceAsStream("/application.properties")
+
+    if (propertiesFile != null) {
+      props.load(propertiesFile)
+      println("Archivo de configuración cargado correctamente.")
+    } else {
+      println("ERROR: No se encuentra application.properties en resources.")
       System.exit(1)
     }
-    val properties = new Properties()
-    properties.load(getClass.getResourceAsStream("/application.properties"))
 
-    // Probamos la conexión leyendo la tabla 'trigger_control'
-    println("--- INICIANDO PRUEBA DE CONEXIÓN A POSTGRESQL ---")
+    // Extraer las variables
+    val jdbcUrl = props.getProperty("jdbc.url")
+    val connectionProps = new Properties()
+    connectionProps.put("user", props.getProperty("jdbc.user"))
+    connectionProps.put("password", props.getProperty("jdbc.password"))
+    connectionProps.put("driver", props.getProperty("jdbc.driver"))
 
+    println(s"Intentando conectar a: $jdbcUrl")
+
+    // Probar conexión
     try {
-      // Leemos la tabla usando los datos del properties
-      val dfTrigger = spark.read.jdbc(
-        properties.getProperty("jdbc.url"),
-        "trigger_control",
-        properties
-      )
-
-      println("¡CONEXIÓN EXITOSA!")
-      println("Mostrando esquema de la tabla trigger_control:")
-      dfTrigger.printSchema()
-
+      val df = spark.read.jdbc(jdbcUrl, "trigger_control", connectionProps)
+      println("\nCONEXIÓN EXITOSA")
+      df.printSchema()
     } catch {
       case e: Exception =>
-        println("\nERROR DE CONEXIÓN:")
-        println(e.getMessage)
-        println("Revisa que el Docker esté encendido y el puerto sea correcto.")
+        println("\nFALLO LA CONEXIÓN")
+        println(s"Error: ${e.getMessage}")
     }
-
     spark.stop()
   }
 }
