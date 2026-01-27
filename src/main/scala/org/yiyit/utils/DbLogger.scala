@@ -16,8 +16,8 @@ object DbLogger {
                fieldName: String,
                msg: String,
                validationType: String,
-               validationId: String,  // <--- NUEVO
-               incidences: String     // <--- NUEVO
+               validationId: String,
+               incidences: String
               ): Unit = {
     try {
       val jdbcUrl = props.getProperty("jdbc.url")
@@ -27,10 +27,10 @@ object DbLogger {
         props.getProperty("jdbc.password")
       )
 
-      // Recortamos el mensaje por seguridad (aunque sea VARCHAR, mejor prevenir)
+      // Recortamos el mensaje por seguridad
       val mensajeSeguro = if (msg.length > 255) msg.take(250) + "..." else msg
 
-      // SQL ajustado EXACTAMENTE a tu imagen de definición
+      // SQL ajustado
       val sql = """
         INSERT INTO public.process_validation_logs
         (id_trigger, validation_id, type_validation, table_name, validation_msg, field_name, incidences, flag, execution_timestamp)
@@ -39,12 +39,12 @@ object DbLogger {
 
       val prepStmt = conn.prepareStatement(sql)
       prepStmt.setInt(1, idTrigger)
-      prepStmt.setString(2, validationId)      // ej: "STRUCTURE_ERROR"
-      prepStmt.setString(3, validationType)    // ej: "technical_validation"
+      prepStmt.setString(2, validationId)
+      prepStmt.setString(3, validationType)
       prepStmt.setString(4, tableName)
       prepStmt.setString(5, mensajeSeguro)
       prepStmt.setString(6, fieldName)
-      prepStmt.setString(7, incidences)        // ej: "34"
+      prepStmt.setString(7, incidences)
 
       prepStmt.executeUpdate()
       conn.close()
@@ -52,7 +52,7 @@ object DbLogger {
     } catch {
       case e: Exception =>
         println(s"   [ERROR INTERNO] No se pudo escribir el log en BBDD: ${e.getMessage}")
-        e.printStackTrace() // Imprimimos la traza para ver si falla algo más
+        e.printStackTrace()
     }
   }
 }
