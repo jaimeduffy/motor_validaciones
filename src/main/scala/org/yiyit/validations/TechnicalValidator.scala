@@ -3,277 +3,87 @@ package org.yiyit.validations
 import org.apache.spark.sql.{DataFrame, Row}
 import org.apache.spark.sql.functions._
 
-/**
- * Validador Técnico (Fase 2)
- *
- * Flujo secuencial:
- * 2.1 Tipo de datos -> si falla, PARA
- * 2.2 Nulos -> si falla, PARA
- * 2.3 Longitud -> si falla, PARA
- * 2.4 Primary Key -> si falla, PARA
- */
 object TechnicalValidator {
 
-  case class ValidationResult(
-                               success: Boolean,
-                               errors: List[String],
-                               phase: String
-                             )
+  // Valida tipos de datos de todas las columnas
+  def validateDataTypes(df: DataFrame, reglas: Array[Row]): List[String] = {
+    val checks = reglas.flatMap { r =>
+      val colName = r.getAs[String]("field_name")
+      val dataType = Option(r.getAs[String]("data_type")).getOrElse("STRING").toUpperCase
+      buildTypeCheck(colName, dataType)
+    }
 
-  /**
-   * Ejecuta todas las validaciones técnicas en orden.
-   */
-  def validate(dataDf: DataFrame, reglas: Array[Row], pkColumns: Seq[String]): ValidationResult = {
+    if (checks.isEmpty) return List.empty
 
-    // Cachear el DataFrame para evitar múltiples lecturas
-    dataDf.cache()
+    val result = df.select(checks.map(_._2): _*).first()
+    checks.zipWithIndex.collect {
+      case ((colName, _, dataType), idx) if result.getLong(idx) > 0 =>
+        s"[TIPO] Columna '$colName': ${result.getLong(idx)} valores no son $dataType válidos"
+    }.toList
+  }
 
-    try {
-      // FASE 2.1: Tipo de datos
-      println("   [2.1] Validando tipos de datos...")
-      val typeErrors = validateAllDataTypes(dataDf, reglas)
-      if (typeErrors.nonEmpty) {
-        println("   [2.1] Tipo de datos: FALLO")
-        return ValidationResult(success = false, errors = typeErrors, phase = "TIPO_DATOS")
-      }
-      println("   [2.1] Tipo de datos: OK")
+  private def buildTypeCheck(colName: String, dataType: String): Option[(String, org.apache.spark.sql.Column, String)] = {
+    val c = col(colName)
+    val notEmpty = c.isNotNull && trim(c) =!= ""
 
-      // FASE 2.2: Nulos
-      println("   [2.2] Validando nulos...")
-      val nullErrors = validateAllNulls(dataDf, reglas)
-      if (nullErrors.nonEmpty) {
-        println("   [2.2] Nulos: FALLO")
-        return ValidationResult(success = false, errors = nullErrors, phase = "NULOS")
-      }
-      println("   [2.2] Nulos: OK")
-
-      // FASE 2.3: Longitud
-      println("   [2.3] Validando longitud...")
-      val lengthErrors = validateAllLengths(dataDf, reglas)
-      if (lengthErrors.nonEmpty) {
-        println("   [2.3] Longitud: FALLO")
-        return ValidationResult(success = false, errors = lengthErrors, phase = "LONGITUD")
-      }
-      println("   [2.3] Longitud: OK")
-
-      // FASE 2.4: Primary Key
-      if (pkColumns.nonEmpty) {
-        println(s"   [2.4] Validando PK (${pkColumns.mkString(", ")})...")
-        val pkErrors = validatePrimaryKey(dataDf, pkColumns)
-        if (pkErrors.nonEmpty) {
-          println("   [2.4] Primary Key: FALLO")
-          return ValidationResult(success = false, errors = pkErrors, phase = "PRIMARY_KEY")
-        }
-        println("   [2.4] Primary Key: OK")
-      }
-
-      ValidationResult(success = true, errors = List.empty, phase = "COMPLETE")
-
-    } finally {
-      dataDf.unpersist()
+    dataType match {
+      case "STRING" => None
+      case "INT" =>
+        Some((colName, sum(when(notEmpty && !c.rlike("^-?[0-9]+$"), 1).otherwise(0)), "INT"))
+      case d if d.startsWith("DECIMAL") =>
+        Some((colName, sum(when(notEmpty && !c.rlike("^-?[0-9]+(\\.[0-9]+)?$"), 1).otherwise(0)), "DECIMAL"))
+      case d if d.startsWith("DATE") =>
+        val format = d.replaceAll("DATE\\s*\\((.+)\\)", "$1").trim
+        Some((colName, sum(when(notEmpty && to_date(c, format).isNull, 1).otherwise(0)), "DATE"))
+      case _ => None
     }
   }
 
-  // ========================
-  // FASE 2.1: TIPO DE DATOS
-  // ========================
-  private def validateAllDataTypes(dataDf: DataFrame, reglas: Array[Row]): List[String] = {
-    val errores = scala.collection.mutable.ListBuffer[String]()
+  // Valida nulos en columnas con nullable=false
+  def validateNulls(df: DataFrame, reglas: Array[Row]): List[String] = {
+    val notNullCols = reglas.filter(r => !Option(r.getAs[Boolean]("nullable")).getOrElse(true))
+      .map(_.getAs[String]("field_name"))
 
-    // Agrupar columnas por tipo para validar en menos pasadas
-    val intColumns = reglas.filter(r =>
-      Option(r.getAs[String]("data_type")).getOrElse("").toUpperCase == "INT"
-    ).map(_.getAs[String]("field_name"))
+    if (notNullCols.isEmpty) return List.empty
 
-    val decimalColumns = reglas.filter(r =>
-      Option(r.getAs[String]("data_type")).getOrElse("").toUpperCase.startsWith("DECIMAL")
-    )
+    val checks = notNullCols.map(c => sum(when(col(c).isNull || trim(col(c)) === "", 1).otherwise(0)))
+    val result = df.select(checks: _*).first()
 
-    val dateColumns = reglas.filter(r =>
-      Option(r.getAs[String]("data_type")).getOrElse("").toUpperCase.startsWith("DATE")
-    )
-
-    // Validar INT en una sola pasada
-    if (intColumns.nonEmpty) {
-      errores ++= validateIntColumns(dataDf, intColumns)
-    }
-
-    // Validar DECIMAL
-    decimalColumns.foreach { regla =>
-      val colName = regla.getAs[String]("field_name")
-      val dataType = regla.getAs[String]("data_type").toUpperCase
-      val decimalSymbol = Option(regla.getAs[String]("decimal_symbol")).getOrElse(".")
-      errores ++= validateDecimalType(dataDf, colName, dataType, decimalSymbol)
-    }
-
-    // Validar DATE
-    dateColumns.foreach { regla =>
-      val colName = regla.getAs[String]("field_name")
-      val dataType = regla.getAs[String]("data_type").toUpperCase
-      errores ++= validateDateType(dataDf, colName, dataType)
-    }
-
-    errores.toList
+    notNullCols.zipWithIndex.collect {
+      case (colName, idx) if result.getLong(idx) > 0 =>
+        s"[NULOS] Columna '$colName': ${result.getLong(idx)} valores nulos/vacíos (nullable=false)"
+    }.toList
   }
 
-  private def validateIntColumns(dataDf: DataFrame, columns: Array[String]): List[String] = {
-    val errores = scala.collection.mutable.ListBuffer[String]()
-
-    // Construir expresiones para todas las columnas INT en una sola query
-    val conditions = columns.map { colName =>
-      sum(when(
-        col(colName).isNotNull &&
-          trim(col(colName)) =!= "" &&
-          !col(colName).rlike("^-?[0-9]+$"), 1
-      ).otherwise(0)).alias(colName)
+  // Valida longitud máxima de columnas
+  def validateLengths(df: DataFrame, reglas: Array[Row]): List[String] = {
+    val colsWithLen = reglas.flatMap { r =>
+      Option(r.getAs[String]("length")).filter(_.nonEmpty).map(l => (r.getAs[String]("field_name"), l.toInt))
     }
 
-    val counts = dataDf.select(conditions: _*).first()
+    if (colsWithLen.isEmpty) return List.empty
 
-    columns.zipWithIndex.foreach { case (colName, idx) =>
-      val invalidCount = counts.getLong(idx)
-      if (invalidCount > 0) {
-        errores += s"[TIPO] Columna '$colName': $invalidCount valores no son INT válidos"
-      }
-    }
+    val checks = colsWithLen.map { case (c, len) => sum(when(col(c).isNotNull && length(col(c)) > len, 1).otherwise(0)) }
+    val result = df.select(checks: _*).first()
 
-    errores.toList
+    colsWithLen.zipWithIndex.collect {
+      case ((colName, maxLen), idx) if result.getLong(idx) > 0 =>
+        s"[LONGITUD] Columna '$colName': ${result.getLong(idx)} valores exceden longitud máxima de $maxLen"
+    }.toList
   }
 
-  private def validateDecimalType(dataDf: DataFrame, colName: String, decimalType: String, decimalSymbol: String): List[String] = {
-    val pattern = """DECIMAL\s*\(\s*(\d+)\s*,\s*(\d+)\s*\)""".r
+  // Valida unicidad de Primary Key compuesta
+  def validatePrimaryKey(df: DataFrame, pkColumns: Seq[String]): List[String] = {
+    if (pkColumns.isEmpty) return List.empty
 
-    decimalType match {
-      case pattern(precisionStr, scaleStr) =>
-        val precision = precisionStr.toInt
-        val scale = scaleStr.toInt
-        val escapedSymbol = if (decimalSymbol == ".") "\\." else decimalSymbol
-        val decimalRegex = s"^-?[0-9]+($escapedSymbol[0-9]+)?$$"
-
-        val invalidCount = dataDf.filter(
-          col(colName).isNotNull &&
-            trim(col(colName)) =!= "" &&
-            !col(colName).rlike(decimalRegex)
-        ).count()
-
-        if (invalidCount > 0) {
-          List(s"[TIPO] Columna '$colName': $invalidCount valores no son DECIMAL válidos")
-        } else {
-          List.empty
-        }
-
-      case _ =>
-        List(s"[TIPO] Columna '$colName': Formato '$decimalType' no reconocido")
-    }
-  }
-
-  private def validateDateType(dataDf: DataFrame, colName: String, dateType: String): List[String] = {
-    val pattern = """DATE\s*\(\s*(.+)\s*\)""".r
-
-    dateType match {
-      case pattern(dateFormat) =>
-        val trimmedFormat = dateFormat.trim
-
-        val invalidCount = dataDf.filter(
-          col(colName).isNotNull &&
-            trim(col(colName)) =!= "" &&
-            to_date(col(colName), trimmedFormat).isNull
-        ).count()
-
-        if (invalidCount > 0) {
-          List(s"[TIPO] Columna '$colName': $invalidCount valores no cumplen formato DATE($trimmedFormat)")
-        } else List.empty
-
-      case _ =>
-        List(s"[TIPO] Columna '$colName': Formato '$dateType' no reconocido")
-    }
-  }
-
-  // ===========================================
-  // FASE 2.2: NULOS (validación en una sola pasada)
-  // ===========================================
-  private def validateAllNulls(dataDf: DataFrame, reglas: Array[Row]): List[String] = {
-    // Filtrar solo columnas con nullable=false
-    val notNullableColumns = reglas.filter { r =>
-      !Option(r.getAs[Boolean]("nullable")).getOrElse(true)
-    }.map(_.getAs[String]("field_name"))
-
-    if (notNullableColumns.isEmpty) {
-      return List.empty
-    }
-
-    // Construir expresiones para contar nulos de todas las columnas en una sola query
-    val conditions = notNullableColumns.map { colName =>
-      sum(when(col(colName).isNull || trim(col(colName)) === "", 1).otherwise(0)).alias(colName)
-    }
-
-    val counts = dataDf.select(conditions: _*).first()
-
-    val errores = scala.collection.mutable.ListBuffer[String]()
-    notNullableColumns.zipWithIndex.foreach { case (colName, idx) =>
-      val nullCount = counts.getLong(idx)
-      if (nullCount > 0) {
-        errores += s"[NULOS] Columna '$colName': $nullCount valores nulos/vacíos (nullable=false)"
-      }
-    }
-
-    errores.toList
-  }
-
-  // ===========================================
-  // FASE 2.3: LONGITUD (validación en una sola pasada)
-  // ===========================================
-  private def validateAllLengths(dataDf: DataFrame, reglas: Array[Row]): List[String] = {
-    // Filtrar columnas con longitud definida
-    val columnsWithLength = reglas.filter { r =>
-      Option(r.getAs[String]("length")).exists(_.nonEmpty)
-    }.map { r =>
-      (r.getAs[String]("field_name"), r.getAs[String]("length").toInt)
-    }
-
-    if (columnsWithLength.isEmpty) {
-      return List.empty
-    }
-
-    // Construir expresiones para todas las columnas en una sola query
-    val conditions = columnsWithLength.map { case (colName, maxLen) =>
-      sum(when(col(colName).isNotNull && length(col(colName)) > maxLen, 1).otherwise(0)).alias(colName)
-    }
-
-    val counts = dataDf.select(conditions: _*).first()
-
-    val errores = scala.collection.mutable.ListBuffer[String]()
-    columnsWithLength.zipWithIndex.foreach { case ((colName, maxLen), idx) =>
-      val invalidCount = counts.getLong(idx)
-      if (invalidCount > 0) {
-        errores += s"[LONGITUD] Columna '$colName': $invalidCount valores exceden longitud máxima de $maxLen"
-      }
-    }
-
-    errores.toList
-  }
-
-  // ===========================================
-  // FASE 2.4: PRIMARY KEY
-  // ===========================================
-  def validatePrimaryKey(dataDf: DataFrame, pkColumns: Seq[String]): List[String] = {
-    if (pkColumns.isEmpty) {
-      return List.empty
-    }
-
-    // Usar groupBy + count para encontrar duplicados más eficientemente
-    val duplicateCount = dataDf
-      .groupBy(pkColumns.map(col): _*)
+    val duplicates = df.groupBy(pkColumns.map(col): _*)
       .count()
       .filter(col("count") > 1)
       .agg(sum(col("count") - 1))
-      .first()
-      .get(0)
+      .first().get(0)
 
-    val duplicates = if (duplicateCount == null) 0L else duplicateCount.asInstanceOf[Long]
-
-    if (duplicates > 0) {
-      List(s"[PK] Clave primaria (${pkColumns.mkString(", ")}): $duplicates registros duplicados")
-    } else List.empty
+    val count = if (duplicates == null) 0L else duplicates.asInstanceOf[Long]
+    if (count > 0) List(s"[PK] Clave primaria (${pkColumns.mkString(", ")}): $count registros duplicados")
+    else List.empty
   }
 }
