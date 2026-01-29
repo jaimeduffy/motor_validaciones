@@ -9,12 +9,14 @@ import org.yiyit.validations.{TableValidator, TechnicalValidator}
 object App {
   def main(args: Array[String]): Unit = {
 
+    // Creamos el SparkSession
     val spark = SparkSession.builder()
       .appName("ValidacionBigData")
       .master("local[*]")
       .getOrCreate()
     spark.sparkContext.setLogLevel("ERROR")
 
+    // Conexión con la BBDD
     val props = new Properties()
     val propertiesFile = getClass.getResourceAsStream("/application.properties")
     if (propertiesFile != null) props.load(propertiesFile) else System.exit(1)
@@ -28,6 +30,8 @@ object App {
     println("\n--> INICIANDO MOTOR DE VALIDACIÓN ...")
 
     try {
+      // Tomamos los valores de trigger_control
+      // Nos quedamos con los triggers en estado pendientes ("flag = 0")
       val triggerDf = spark.read.jdbc(jdbcUrl, "public.trigger_control", connectionProps)
       val pendientes = triggerDf.filter("flag = 0").collect()
 
@@ -68,14 +72,20 @@ object App {
           val estructuraResult = TableValidator.validateStructure(dataDf, expectedColumns, hasHeader)
 
           if (!estructuraResult.success) {
+            // Caso ERROR
             val errorMsg = estructuraResult.errorMessage.getOrElse("Error desconocido")
             println(s"   FALLO: $errorMsg")
             DbLogger.logError(props, idTrigger, tableName, "ALL_COLUMNS", errorMsg, "technical_validation", "STRUCTURE_MISMATCH", "1")
             updateTriggerFlag(idTrigger, 31, jdbcUrl, props)
             println("   Flag actualizado a 31")
           } else {
+            // Caso ÉXITO
             println(s"   OK")
+            updateTriggerFlag(idTrigger, 12, jdbcUrl, props)
+            println("--> Flag actualizado a 12 (Validaciones de Tabla pasadas).")
+            // Tomamos el DF validado
             val validatedDf = estructuraResult.dataFrame.get
+            // Aplicamos filtro y map para tomar los nombres de las columnas que son pk
             val pkColumns = reglas.filter(r => Option(r.getAs[Boolean]("pk")).getOrElse(false)).map(_.getAs[String]("field_name")).toSeq
 
             // =======================
@@ -89,7 +99,7 @@ object App {
             fase2Errors = TechnicalValidator.validateDataTypes(validatedDf, reglas)
             faseActual = "TIPO_DATOS"
 
-            // 2.2 Nulos (solo si 2.1 pasó)
+            // 2.2 Nulos
             if (fase2Errors.isEmpty) {
               println("   OK")
               println("\n--> [FASE 2.2] Validando nulos...")
@@ -97,7 +107,7 @@ object App {
               faseActual = "NULOS"
             }
 
-            // 2.3 Longitud (solo si 2.2 pasó)
+            // 2.3 Longitud
             if (fase2Errors.isEmpty) {
               println("   OK")
               println("\n--> [FASE 2.3] Validando longitud...")
@@ -105,7 +115,7 @@ object App {
               faseActual = "LONGITUD"
             }
 
-            // 2.4 Primary Key (solo si 2.3 pasó)
+            // 2.4 Primary Key (Solo si hay PK)
             if (fase2Errors.isEmpty && pkColumns.nonEmpty) {
               println("   OK")
               println(s"\n--> [FASE 2.4] Validando PK (${pkColumns.mkString(", ")})...")
@@ -118,18 +128,22 @@ object App {
               fase2Errors.foreach { msg =>
                 println(s"      $msg")
                 val codigoError = faseActual match {
-                  case "TIPO_DATOS" => "DATA_TYPE_VIOLATION"
-                  case "NULOS" => "NOT_NULL_VIOLATION"
-                  case "LONGITUD" => "LENGTH_VIOLATION"
-                  case "PRIMARY_KEY" => "PK_VIOLATION"
+                  case "TIPO_DATOS" => "DATA_TYPE_ERROR"
+                  case "NULOS" => "NOT_NULL_ERROR"
+                  case "LONGITUD" => "LENGTH_ERROR"
+                  case "PRIMARY_KEY" => "PK_ERROR"
                 }
-                val colName = msg.split("'")(1)
+                val colName = if (msg.contains("Columna '")) msg.split("'")(1)
+                  else if (msg.contains("Clave primaria")) pkColumns.mkString(",")
+                  else "UNKNOWN"
                 DbLogger.logError(props, idTrigger, tableName, colName, msg, "technical_validation", codigoError, "1")
               }
               updateTriggerFlag(idTrigger, 32, jdbcUrl, props)
               println(s"\n   Flag actualizado a 32")
             } else {
               println("   OK")
+              updateTriggerFlag(idTrigger, 13, jdbcUrl, props)
+              println("--> Flag actualizado a 13 (Validaciones técnicas pasadas).")
 
               // =======================
               // FASE 3: INTEGRIDAD REFERENCIAL
@@ -164,7 +178,8 @@ object App {
     println("\n--> Motor de validación finalizado.")
   }
 
-  def updateTriggerFlag(id: Int, newFlag: Int, url: String, props: Properties): Unit = {
+  // Función privada para actualizar el Flag de la tabla trigger_control
+  private def updateTriggerFlag(id: Int, newFlag: Int, url: String, props: Properties): Unit = {
     val conn = DriverManager.getConnection(url, props.getProperty("jdbc.user"), props.getProperty("jdbc.password"))
     try {
       val stmt = conn.prepareStatement("UPDATE public.trigger_control SET flag = ? WHERE id_trigger = ?")

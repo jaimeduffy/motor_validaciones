@@ -6,9 +6,7 @@ import java.util.Properties
 object DbLogger {
 
   /**
-   * Registra un error en la base de datos ajustándose a la definición real de la tabla.
-   * * @param validationId  Código del error (ej: "STRUCTURE_ERROR", "NOT_NULL_ERROR"). OBLIGATORIO.
-   * @param incidences    Número de fallos encontrados (como String). OBLIGATORIO.
+   * Registra un error en la base de datos (process_validation_logs)
    */
   def logError(props: Properties,
                idTrigger: Int,
@@ -20,6 +18,7 @@ object DbLogger {
                incidences: String
               ): Unit = {
     try {
+      // Conexión con la BD
       val jdbcUrl = props.getProperty("jdbc.url")
       val conn = DriverManager.getConnection(
         jdbcUrl,
@@ -27,10 +26,10 @@ object DbLogger {
         props.getProperty("jdbc.password")
       )
 
-      // Recortamos el mensaje por seguridad
+      // Recortamos el mensaje por si excede la longitud
       val mensajeSeguro = if (msg.length > 255) msg.take(250) + "..." else msg
 
-      // SQL ajustado
+      // Código para insertar en process_validation_logs
       val sql = """
         INSERT INTO public.process_validation_logs
         (id_trigger, validation_id, type_validation, table_name, validation_msg, field_name, incidences, flag, execution_timestamp)
