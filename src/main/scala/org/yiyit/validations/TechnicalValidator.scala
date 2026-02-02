@@ -2,10 +2,10 @@ package org.yiyit.validations
 
 import org.apache.spark.sql.{DataFrame, Row}
 import org.apache.spark.sql.functions._
+import scala.collection.Seq
 
 object TechnicalValidator {
 
-  // Valida tipos de datos de todas las columnas
   def validateDataTypes(df: DataFrame, reglas: Array[Row]): List[String] = {
     val checks = reglas.flatMap { r =>
       val colName = r.getAs[String]("field_name")
@@ -39,7 +39,6 @@ object TechnicalValidator {
     }
   }
 
-  // Valida nulos en columnas con nullable=false
   def validateNulls(df: DataFrame, reglas: Array[Row]): List[String] = {
     val notNullCols = reglas.filter(r => !Option(r.getAs[Boolean]("nullable")).getOrElse(true))
       .map(_.getAs[String]("field_name"))
@@ -55,7 +54,6 @@ object TechnicalValidator {
     }.toList
   }
 
-  // Valida longitud máxima de columnas
   def validateLengths(df: DataFrame, reglas: Array[Row]): List[String] = {
     val colsWithLen = reglas.flatMap { r =>
       Option(r.getAs[String]("length")).filter(_.nonEmpty).map(l => (r.getAs[String]("field_name"), l.toInt))
@@ -72,18 +70,18 @@ object TechnicalValidator {
     }.toList
   }
 
-  // Valida unicidad de Primary Key compuesta
   def validatePrimaryKey(df: DataFrame, pkColumns: Seq[String]): List[String] = {
     if (pkColumns.isEmpty) return List.empty
 
-    val duplicates = df.groupBy(pkColumns.map(col): _*)
+    val pkCols = pkColumns.toList
+    val duplicates = df.groupBy(pkCols.map(col): _*)
       .count()
       .filter(col("count") > 1)
       .agg(sum(col("count") - 1))
       .first().get(0)
 
     val count = if (duplicates == null) 0L else duplicates.asInstanceOf[Long]
-    if (count > 0) List(s"[PK] Clave primaria (${pkColumns.mkString(", ")}): $count registros duplicados")
+    if (count > 0) List(s"[PK] Clave primaria (${pkCols.mkString(", ")}): $count registros duplicados")
     else List.empty
   }
 }

@@ -1,6 +1,7 @@
 package org.yiyit.validations
 
 import org.apache.spark.sql.DataFrame
+import scala.collection.Seq
 
 object TableValidator {
 
@@ -8,20 +9,19 @@ object TableValidator {
 
   def validateStructure(df: DataFrame, expectedColumns: Seq[String], hasHeader: Boolean): Result = {
 
-    // Validar tabla vacía
+    val expected = expectedColumns.toList
+
     if (df.isEmpty) {
       return Result(success = false, Some("La tabla está vacía (0 filas)"), None)
     }
 
-    // Validar número de columnas
-    if (df.columns.length != expectedColumns.length) {
-      return Result(success = false, Some(s"Número de columnas incorrecto. Esperadas: ${expectedColumns.length}, Encontradas: ${df.columns.length}"), None)
+    if (df.columns.length != expected.length) {
+      return Result(success = false, Some(s"Número de columnas incorrecto. Esperadas: ${expected.length}, Encontradas: ${df.columns.length}"), None)
     }
 
     if (hasHeader) {
-      // Validar nombres de columnas
       val reales = df.columns.map(_.toLowerCase).toSet
-      val esperadas = expectedColumns.map(_.toLowerCase).toSet
+      val esperadas = expected.map(_.toLowerCase).toSet
       val faltantes = esperadas.diff(reales)
       val extras = reales.diff(esperadas)
 
@@ -33,8 +33,7 @@ object TableValidator {
       }
     }
 
-    // Renombrar columnas según expectedColumns
-    val renamed = df.columns.zip(expectedColumns).foldLeft(df) { case (d, (old, nuevo)) => d.withColumnRenamed(old, nuevo) }
+    val renamed = df.columns.zip(expected).foldLeft(df) { case (d, (old, nuevo)) => d.withColumnRenamed(old, nuevo) }
     Result(success = true, None, Some(renamed))
   }
 }
