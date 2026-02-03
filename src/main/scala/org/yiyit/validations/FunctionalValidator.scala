@@ -9,7 +9,7 @@ object FunctionalValidator {
     var errores = List.empty[String]
 
     // Validación 1: Para cada (template_code, sheet) debe existir exactamente 1 registro con data_name = data_as_of, cristine_unit, excel_title
-    errores = errores ++ validateRequiredDataNames(df)
+    errores = errores ++ validation1(df)
 
     // Validación 2: Para cada (template_code, sheet) debe existir al menos 1 registro con data_name que comience por "ccy"
     errores = errores ++ validateCcyExists(df)
@@ -24,7 +24,7 @@ object FunctionalValidator {
   }
 
   // Validación 1: data_as_of, cristine_unit, excel_title deben aparecer exactamente 1 vez por (template_code, sheet)
-  private def validateRequiredDataNames(df: DataFrame): List[String] = {
+  private def validation1(df: DataFrame): List[String] = {
     val requiredNames = List("data_as_of", "cristine_unit", "excel_title")
 
     requiredNames.flatMap { name =>
@@ -70,17 +70,24 @@ object FunctionalValidator {
     val numCols = df.columns.length
     val numRows = df.count()
 
-    // Extraer columna y fila de excel_cell (formato: A1, B3, AA10, etc.)
+    // UDF para convertir letra(s) de columna Excel a número (A=1, B=2, ..., Z=26, AA=27, etc.)
+    val colLetterToNumber = udf((letters: String) => {
+      if (letters == null || letters.isEmpty) 0
+      else letters.toUpperCase.foldLeft(0)((acc, c) => acc * 26 + (c - 'A' + 1))
+    })
+
     val dfWithParsed = df.filter(col("excel_cell").isNotNull && trim(col("excel_cell")) =!= "")
-      .withColumn("cell_col", regexp_extract(col("excel_cell"), "^([A-Za-z]+)", 1))
+      .withColumn("cell_col_letters", regexp_extract(col("excel_cell"), "^([A-Za-z]+)", 1))
+      .withColumn("cell_col_num", colLetterToNumber(col("cell_col_letters")))
       .withColumn("cell_row", regexp_extract(col("excel_cell"), "([0-9]+)$", 1).cast("long"))
 
-    // Convertir letra(s) de columna a número (A=1, B=2, ..., Z=26, AA=27, etc.)
+    // Validar que columna y fila estén dentro del rango
     val invalidCells = dfWithParsed.filter(
-      col("cell_row") > numRows || col("cell_row") < 1
+      col("cell_col_num") > numCols || col("cell_col_num") < 1 ||
+        col("cell_row") > numRows || col("cell_row") < 1
     ).count()
 
-    if (invalidCells > 0) List(s"[FUNC] Columna 'excel_cell': $invalidCells valores fuera del rango válido de filas")
+    if (invalidCells > 0) List(s"[FUNC] Columna 'excel_cell': $invalidCells valores fuera del rango válido (cols: $numCols, rows: $numRows)")
     else List.empty
   }
 }

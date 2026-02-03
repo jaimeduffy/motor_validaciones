@@ -55,11 +55,11 @@ object App {
           val dataDf = spark.read.jdbc(jdbcUrl, tableName, connectionProps)
           // Calculamos el número de registros para actualizar el trigger_control
           val numRegistros = dataDf.count()
-          println(s"--> Datos cargados: ${numRegistros} registros")
-
-          // Empezamos las validaciones y actualizamos el flag a 11 para indicar que se está procesando
-          updateTriggerFlag(idTrigger, 11, numRegistros, jdbcUrl, props)
-          println("--> Flag actualizado a 11 (Procesando...)")
+          if (numRegistros > 0) {
+            updateTriggerFlag(idTrigger, 1, numRegistros, jdbcUrl, props)
+            println("--> Flag actualizado a 1 (Ingesta OK)")
+            println(s"--> Datos cargados: $numRegistros registros")
+          }
 
           // Cargar reglas desde semantic_layer ordenando por el campo field_position
           val rulesDf = spark.read.jdbc(jdbcUrl, s"(SELECT * FROM public.semantic_layer WHERE id_type_table = '$idTypeTable' ORDER BY field_position) as r", connectionProps)
@@ -70,7 +70,11 @@ object App {
           // =======================
           // FASE 1: ESTRUCTURA
           // =======================
+          // Empezamos las validaciones y actualizamos el flag a 11 para indicar que se está procesando
+          updateTriggerFlag(idTrigger, 11, numRegistros, jdbcUrl, props)
+          println("--> Flag actualizado a 11 (Procesando...)")
           println("\n--> [FASE 1] Validando estructura...")
+
           val estructuraResult = TableValidator.validateStructure(dataDf, expectedColumns, hasHeader)
 
           if (!estructuraResult.success) {
