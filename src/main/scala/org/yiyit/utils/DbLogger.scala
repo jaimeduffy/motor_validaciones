@@ -26,27 +26,34 @@ object DbLogger {
         props.getProperty("jdbc.password")
       )
 
-      // Recortamos el mensaje por si excede la longitud
-      val mensajeSeguro = if (msg.length > 255) msg.take(250) + "..." else msg
+      try {
+        // Recortamos el mensaje por si excede la longitud
+        val mensajeSeguro = if (msg.length > 255) msg.take(250) + "..." else msg
 
-      // Código para insertar en process_validation_logs
-      val sql = """
-        INSERT INTO public.process_validation_logs
-        (id_trigger, validation_id, type_validation, table_name, validation_msg, field_name, incidences, flag, execution_timestamp)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 1, NOW())
-      """
+        // Código para insertar en process_validation_logs
+        val sql =
+          """
+          INSERT INTO public.process_validation_logs
+          (id_trigger, validation_id, type_validation, table_name, validation_msg, field_name, incidences, flag, execution_timestamp)
+          VALUES (?, ?, ?, ?, ?, ?, ?, 1, NOW())
+        """
 
-      val prepStmt = conn.prepareStatement(sql)
-      prepStmt.setInt(1, idTrigger)
-      prepStmt.setString(2, validationId)
-      prepStmt.setString(3, validationType)
-      prepStmt.setString(4, tableName)
-      prepStmt.setString(5, mensajeSeguro)
-      prepStmt.setString(6, fieldName)
-      prepStmt.setString(7, incidences)
-
-      prepStmt.executeUpdate()
-      conn.close()
+        val prepStmt = conn.prepareStatement(sql)
+        try {
+          prepStmt.setInt(1, idTrigger)
+          prepStmt.setString(2, validationId)
+          prepStmt.setString(3, validationType)
+          prepStmt.setString(4, tableName)
+          prepStmt.setString(5, mensajeSeguro)
+          prepStmt.setString(6, fieldName)
+          prepStmt.setString(7, incidences)
+          prepStmt.executeUpdate()
+        } finally {
+          prepStmt.close()
+        }
+      } finally {
+        conn.close()
+      }
 
     } catch {
       case e: Exception =>
