@@ -3,9 +3,10 @@ package org.yiyit.validations
 import org.apache.spark.sql.{DataFrame, Row, SparkSession}
 import org.apache.spark.sql.functions._
 import java.util.Properties
+import org.yiyit.models.ValidationError
 
 object ReferentialValidator {
-  def validate(df: DataFrame, reglas: Array[Row], jdbcUrl: String, connectionProps: Properties): List[String] = {
+  def validate(df: DataFrame, reglas: Array[Row], jdbcUrl: String, connectionProps: Properties): List[ValidationError] = {
     val spark = df.sparkSession
 
     // Filtrar columnas con referencia definida
@@ -24,7 +25,11 @@ object ReferentialValidator {
       // Parsear tabla.columna
       val parts = refTableField.split("\\.")
       if (parts.length != 2) {
-        List(s"[IR] Columna '$colName': Formato inválido en referential_table_field_name: $refTableField")
+        List(ValidationError(
+          columnName = colName,
+          errorMessage = s"[IR] Columna '$colName': Formato inválido en referential_table_field_name: $refTableField",
+          errorType = Some("REF_INTEGRITY_ERROR")
+        ))
       } else {
         val refTable = s"$refBbdd.${parts(0)}"
         val refColumn = parts(1)
@@ -35,7 +40,7 @@ object ReferentialValidator {
   }
 
   private def validateColumn(df: DataFrame, colName: String, refTable: String, refColumn: String,
-                             spark: SparkSession, jdbcUrl: String, connectionProps: Properties): List[String] = {
+                             spark: SparkSession, jdbcUrl: String, connectionProps: Properties): List[ValidationError] = {
     try {
       // Cargar valores de referencia
       val refDf = spark.read.jdbc(jdbcUrl, s"(SELECT DISTINCT $refColumn FROM $refTable) as ref", connectionProps)
@@ -49,34 +54,24 @@ object ReferentialValidator {
       val invalidCount = invalidValues.count()
 
       if (invalidCount > 0) {
-        List(s"[IR] Columna '$colName': $invalidCount valores no existen en $refTable.$refColumn")
+        List(ValidationError(
+          columnName = colName,
+          errorMessage = s"[IR] Columna '$colName': $invalidCount valores no existen en $refTable.$refColumn",
+          errorType = Some("REF_INTEGRITY_ERROR")
+        ))
       } else {
         List.empty
       }
     } catch {
       case e: Exception =>
-        List(s"[IR] Columna '$colName': Error al validar contra $refTable - ${e.getMessage}")
+        List(ValidationError(
+          columnName = colName,
+          errorMessage = s"[IR] Columna '$colName': Error al validar contra $refTable - ${e.getMessage}",
+          errorType = Some("REF_INTEGRITY_ERROR")
+        ))
     }
   }
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 

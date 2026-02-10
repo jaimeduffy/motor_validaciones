@@ -2,11 +2,12 @@ package org.yiyit.validations
 
 import org.apache.spark.sql.{DataFrame, Row}
 import org.apache.spark.sql.functions._
+import org.yiyit.models.ValidationError
 import scala.collection.Seq
 
 object TechnicalValidator {
 
-  def validateDataTypes(df: DataFrame, reglas: Array[Row]): List[String] = {
+  def validateDataTypes(df: DataFrame, reglas: Array[Row]): List[ValidationError] = {
     val checks = reglas.flatMap { r =>
       val colName = r.getAs[String]("field_name")
       val dataType = Option(r.getAs[String]("data_type")).getOrElse("STRING").toUpperCase
@@ -18,7 +19,11 @@ object TechnicalValidator {
     val result = df.select(checks.map(_._2): _*).first()
     checks.zipWithIndex.collect {
       case ((colName, _, dataType), idx) if result.getLong(idx) > 0 =>
-        s"[TIPO] Columna '$colName': ${result.getLong(idx)} valores no son $dataType válidos"
+        ValidationError(
+          columnName = colName,
+          errorMessage = s"[TIPO] Columna '$colName': ${result.getLong(idx)} valores no son $dataType válidos",
+          errorType = Some("DATA_TYPE_ERROR")
+        )
     }.toList
   }
 
@@ -39,7 +44,7 @@ object TechnicalValidator {
     }
   }
 
-  def validateNulls(df: DataFrame, reglas: Array[Row]): List[String] = {
+  def validateNulls(df: DataFrame, reglas: Array[Row]): List[ValidationError] = {
     val notNullCols = reglas.filter(r => !Option(r.getAs[Boolean]("nullable")).getOrElse(true))
       .map(_.getAs[String]("field_name"))
 
@@ -50,11 +55,15 @@ object TechnicalValidator {
 
     notNullCols.zipWithIndex.collect {
       case (colName, idx) if result.getLong(idx) > 0 =>
-        s"[NULOS] Columna '$colName': ${result.getLong(idx)} valores nulos/vacíos (nullable=false)"
+        ValidationError(
+          columnName = colName,
+          errorMessage = s"[NULOS] Columna '$colName': ${result.getLong(idx)} valores nulos/vacíos (nullable=false)",
+          errorType = Some("NOT_NULL_ERROR")
+        )
     }.toList
   }
 
-  def validateLengths(df: DataFrame, reglas: Array[Row]): List[String] = {
+  def validateLengths(df: DataFrame, reglas: Array[Row]): List[ValidationError] = {
     val colsWithLen = reglas.flatMap { r =>
       Option(r.getAs[String]("length")).filter(_.nonEmpty).map(l => (r.getAs[String]("field_name"), l.toInt))
     }
@@ -66,11 +75,15 @@ object TechnicalValidator {
 
     colsWithLen.zipWithIndex.collect {
       case ((colName, maxLen), idx) if result.getLong(idx) > 0 =>
-        s"[LONGITUD] Columna '$colName': ${result.getLong(idx)} valores exceden longitud máxima de $maxLen"
+        ValidationError(
+          columnName = colName,
+          errorMessage = s"[LONGITUD] Columna '$colName': ${result.getLong(idx)} valores exceden longitud máxima de $maxLen",
+          errorType = Some("LENGTH_ERROR")
+        )
     }.toList
   }
 
-  def validatePrimaryKey(df: DataFrame, pkColumns: Seq[String]): List[String] = {
+  def validatePrimaryKey(df: DataFrame, pkColumns: Seq[String]): List[ValidationError] = {
     if (pkColumns.isEmpty) return List.empty
 
     val pkCols = pkColumns.toList
@@ -81,7 +94,12 @@ object TechnicalValidator {
       .first().get(0)
 
     val count = if (duplicates == null) 0L else duplicates.asInstanceOf[Long]
-    if (count > 0) List(s"[PK] Clave primaria (${pkCols.mkString(", ")}): $count registros duplicados")
-    else List.empty
+    if (count > 0) {
+      List(ValidationError(
+        columnName = pkCols.mkString(","),
+        errorMessage = s"[PK] Clave primaria (${pkCols.mkString(", ")}): $count registros duplicados",
+        errorType = Some("PK_ERROR")
+      ))
+    } else List.empty
   }
 }

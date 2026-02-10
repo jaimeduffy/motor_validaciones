@@ -2,11 +2,12 @@ package org.yiyit.validations
 
 import org.apache.spark.sql.DataFrame
 import org.apache.spark.sql.functions._
+import org.yiyit.models.ValidationError
 
 object FunctionalValidator {
 
-  def validate(df: DataFrame): List[String] = {
-    var errores = List.empty[String]
+  def validate(df: DataFrame): List[ValidationError] = {
+    var errores = List.empty[ValidationError]
 
     // Validación 1: Para cada (template_code, sheet) debe existir exactamente 1 registro con data_name = data_as_of, cristine_unit, excel_title
     errores = errores ++ validation1(df)
@@ -24,7 +25,7 @@ object FunctionalValidator {
   }
 
   // Validación 1: data_as_of, cristine_unit, excel_title deben aparecer exactamente 1 vez por (template_code, sheet)
-  private def validation1(df: DataFrame): List[String] = {
+  private def validation1(df: DataFrame): List[ValidationError] = {
     val requiredNames = List("data_as_of", "cristine_unit", "excel_title")
 
     requiredNames.flatMap { name =>
@@ -34,13 +35,18 @@ object FunctionalValidator {
         .filter(col("count") =!= 1)
         .count()
 
-      if (counts > 0) Some(s"[FUNC] data_name='$name': $counts pares (template_code, sheet) no tienen exactamente 1 registro")
-      else None
+      if (counts > 0) {
+        Some(ValidationError(
+          columnName = "data_name",
+          errorMessage = s"[FUNC] data_name='$name': $counts pares (template_code, sheet) no tienen exactamente 1 registro",
+          errorType = Some("FUNCTIONAL_ERROR")
+        ))
+      } else None
     }
   }
 
   // Validación 2: Debe existir al menos 1 data_name que comience por "ccy" por cada (template_code, sheet)
-  private def validateCcyExists(df: DataFrame): List[String] = {
+  private def validateCcyExists(df: DataFrame): List[ValidationError] = {
     val totalPairs = df.select("template_code", "sheet").distinct().count()
 
     val pairsWithCcy = df.filter(lower(col("data_name")).startsWith("ccy"))
@@ -49,24 +55,34 @@ object FunctionalValidator {
       .count()
 
     val missing = totalPairs - pairsWithCcy
-    if (missing > 0) List(s"[FUNC] data_name comenzando por 'ccy': $missing pares (template_code, sheet) sin registro")
-    else List.empty
+    if (missing > 0) {
+      List(ValidationError(
+        columnName = "data_name",
+        errorMessage = s"[FUNC] data_name comenzando por 'ccy': $missing pares (template_code, sheet) sin registro",
+        errorType = Some("FUNCTIONAL_ERROR")
+      ))
+    } else List.empty
   }
 
   // Validación 3: column_x debe comenzar por "_c"
-  private def validateColumnXFormat(df: DataFrame): List[String] = {
+  private def validateColumnXFormat(df: DataFrame): List[ValidationError] = {
     val invalidCount = df.filter(
       col("column_x").isNotNull &&
         trim(col("column_x")) =!= "" &&
         !col("column_x").startsWith("_c")
     ).count()
 
-    if (invalidCount > 0) List(s"[FUNC] Columna 'column_x': $invalidCount valores no comienzan por '_c'")
-    else List.empty
+    if (invalidCount > 0) {
+      List(ValidationError(
+        columnName = "column_x",
+        errorMessage = s"[FUNC] Columna 'column_x': $invalidCount valores no comienzan por '_c'",
+        errorType = Some("FUNCTIONAL_ERROR")
+      ))
+    } else List.empty
   }
 
   // Validación 4: excel_cell debe estar dentro del rango válido (ej: "B3" -> columna 2, fila 3)
-  private def validateExcelCellRange(df: DataFrame): List[String] = {
+  private def validateExcelCellRange(df: DataFrame): List[ValidationError] = {
     val numCols = df.columns.length
     val numRows = df.count()
 
@@ -87,7 +103,12 @@ object FunctionalValidator {
         col("cell_row") > numRows || col("cell_row") < 1
     ).count()
 
-    if (invalidCells > 0) List(s"[FUNC] Columna 'excel_cell': $invalidCells valores fuera del rango válido (cols: $numCols, rows: $numRows)")
-    else List.empty
+    if (invalidCells > 0) {
+      List(ValidationError(
+        columnName = "excel_cell",
+        errorMessage = s"[FUNC] Columna 'excel_cell': $invalidCells valores fuera del rango válido (cols: $numCols, rows: $numRows)",
+        errorType = Some("FUNCTIONAL_ERROR")
+      ))
+    } else List.empty
   }
 }

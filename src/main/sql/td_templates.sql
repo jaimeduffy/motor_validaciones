@@ -10,7 +10,7 @@ CREATE TABLE bu_yiyit_bigdata.td_templates (
     template_text VARCHAR(50)
 );
 
--- Insertar los datos del excel
+-- Insertar los datos
 INSERT INTO bu_yiyit_bigdata.td_templates (source, template_code, template_text) VALUES
 ('yiyit_bigdata', '1', 'FRC'),
 ('yiyit_bigdata', '2', 'ALCO'),
