@@ -7,6 +7,7 @@ object TableValidator {
 
   case class Result(success: Boolean, errorMessage: Option[String], dataFrame: Option[DataFrame])
 
+  // Valida la estructura del DF: número de columnas y nombres si tiene header
   def validateStructure(df: DataFrame, expectedColumns: Seq[String], hasHeader: Boolean): Result = {
 
     val expected = expectedColumns.toList
@@ -19,6 +20,7 @@ object TableValidator {
       return Result(success = false, Some(s"Número de columnas incorrecto. Esperadas: ${expected.length}, Encontradas: ${df.columns.length}"), None)
     }
 
+    // Si tiene header, comprobamos que los nombres coincidan
     if (hasHeader) {
       val reales = df.columns.map(_.toLowerCase).toSet
       val esperadas = expected.map(_.toLowerCase).toSet
@@ -33,6 +35,7 @@ object TableValidator {
       }
     }
 
+    // Renombramos las columnas del DF con los nombres esperados de semantic_layer
     val renamed = df.columns.zip(expected).foldLeft(df) { case (d, (old, nuevo)) => d.withColumnRenamed(old, nuevo) }
     Result(success = true, None, Some(renamed))
   }

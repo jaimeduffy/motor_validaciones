@@ -17,13 +17,12 @@ object ReferentialValidator {
 
     if (colsConReferencia.isEmpty) return List.empty
 
-    // Separar reglas con formato válido de las que tienen formato inválido
+    // Separar reglas válidas de las que tienen formato inválido en referential_table_field_name
     val (reglasValidas, reglasInvalidas) = colsConReferencia.partition { regla =>
-      val refTableField = regla.getAs[String]("referential_table_field_name")
-      refTableField.split("\\.").length == 2
+      regla.getAs[String]("referential_table_field_name").split("\\.").length == 2
     }
 
-    // Errores de formato en referential_table_field_name
+    // Errores de formato
     val formatErrors = reglasInvalidas.map { regla =>
       val colName = regla.getAs[String]("field_name")
       val refTableField = regla.getAs[String]("referential_table_field_name")
@@ -34,30 +33,26 @@ object ReferentialValidator {
       )
     }.toList
 
-    // Agrupar reglas por (tabla de referencia, columna de referencia) para no leer la misma tabla múltiples veces
+    // Agrupamos por (tabla, columna) de referencia para hacer una sola lectura JDBC por tabla
     val reglasAgrupadas = reglasValidas.map { regla =>
       val colName = regla.getAs[String]("field_name")
       val refBbdd = regla.getAs[String]("referential_bbdd")
       val parts = regla.getAs[String]("referential_table_field_name").split("\\.")
-      val refTable = s"$refBbdd.${parts(0)}"
-      val refColumn = parts(1)
-      (refTable, refColumn, colName)
+      (s"$refBbdd.${parts(0)}", parts(1), colName)
     }.groupBy { case (refTable, refColumn, _) => (refTable, refColumn) }
 
-    // Validar agrupando: una sola lectura JDBC por cada (tabla, columna) de referencia
+    // Validamos: una lectura JDBC por cada (tabla, columna) de referencia
     val validationErrors = reglasAgrupadas.flatMap { case ((refTable, refColumn), entries) =>
       try {
-        // Cargar valores de referencia (una sola vez para todas las columnas que apuntan aquí)
+        // Cargamos valores de referencia una sola vez
         val refDf = spark.read.jdbc(jdbcUrl, s"(SELECT DISTINCT $refColumn FROM $refTable) as ref", connectionProps)
         val refValues = refDf.select(col(refColumn).cast("string")).distinct()
 
         entries.flatMap { case (_, _, colName) =>
-          // Obtener valores distintos de la columna a validar
+          // Valores distintos de la columna a validar
           val colValues = df.select(col(colName).cast("string")).filter(col(colName).isNotNull).distinct()
-
-          // Encontrar valores que no existen en la referencia
-          val invalidValues = colValues.join(refValues, colValues(colName) === refValues(refColumn), "left_anti")
-          val invalidCount = invalidValues.count()
+          // left_anti: valores que no existen en la referencia
+          val invalidCount = colValues.join(refValues, colValues(colName) === refValues(refColumn), "left_anti").count()
 
           if (invalidCount > 0) {
             Some(ValidationError(

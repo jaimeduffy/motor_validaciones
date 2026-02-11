@@ -5,9 +5,7 @@ import java.util.Properties
 
 object DbLogger {
 
-  /**
-   * Registra un error en la base de datos (process_validation_logs)
-   */
+  // Registra un error en la tabla process_validation_logs
   def logError(props: Properties,
                idTrigger: Int,
                tableName: String,

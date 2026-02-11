@@ -14,6 +14,9 @@ object App {
     val spark = SparkSession.builder()
       .appName("ValidacionBigData")
       .master("local[*]")
+      .config("spark.driver.memory", "6g")
+      .config("spark.sql.shuffle.partitions", "12")
+      .config("spark.driver.extraJavaOptions", "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED")
       .getOrCreate()
     // Configuración de logs
     spark.sparkContext.setLogLevel("ERROR")
@@ -33,14 +36,15 @@ object App {
     // Optimización: fetchsize para reducir roundtrips en lecturas JDBC de Spark
     connectionProps.put("fetchsize", "10000")
 
-    println("\n--> INICIANDO MOTOR DE VALIDACIÓN ...")
+    println("\n--> Iniciando motor de validación ...")
 
     try {
       // Cargamos trigger_control y filtramos por "flag = 0" (acciones pendientes)
       val triggerDf = spark.read.jdbc(jdbcUrl, "public.trigger_control", connectionProps)
+      // Uso collect porque sé que trigger siempre tiene muy pocos registros
       val pendientes = triggerDf.filter("flag = 0").collect()
 
-      if (pendientes.isEmpty) println("--> No hay tareas pendientes.")
+      if (pendientes.isEmpty) println("\n--> No hay tareas pendientes.")
       // Realizamos las validaciones para cada una de las tareas pendientes
       pendientes.foreach { row =>
         // Inicio Temporizador
@@ -61,12 +65,51 @@ object App {
           // Cargar table_configuration para esa tabla
           val tableConfigDf = spark.read.jdbc(jdbcUrl, s"(SELECT * FROM public.table_configuration WHERE id_type_table = '$idTypeTable') as t", connectionProps)
           val hasHeader = tableConfigDf.first().getAs[Boolean]("header")
-          println(s"--> table_configuration cargado: header = $hasHeader")
+          println(s"\n--> table_configuration cargado: header = $hasHeader")
 
-          // Cargar datos desde las tablas madres y contar los registros
-          val dataDf = spark.read.jdbc(jdbcUrl, tableName, connectionProps)
-          updateTriggerFlag(conn, idTrigger, 1)
-          println("--> Flag actualizado a 1 (Ingesta OK)")
+          // Cargar datos desde las tablas madres y persistir para evitar re-lecturas JDBC
+          // Particionar en 12 particiones por 12 nucleos lógicos de mi máquina
+          // Particionamos por column_x porque es no nulo y valores enteros
+          println(s"\n--> Leyendo de forma paralela por 'column_x'...")
+
+          // Creamos una tabla para limpiar 'column_x' y lo convierte en INT
+          // substring(column_x from 3) salta los 2 primeros caracteres ('_c')
+          val tableQuery = s"(SELECT *, CAST(substring(column_x FROM 3) AS INT) as partition_id FROM $tableName) as t"
+          val partitionCol = "partition_id"
+
+          // Calculamos MIN y MAX de esa columna
+          val stmtMinMax = conn.createStatement()
+          val rsMinMax = stmtMinMax.executeQuery(s"SELECT MIN(CAST(substring(column_x FROM 3) AS INT)), MAX(CAST(substring(column_x FROM 3) AS INT)) FROM $tableName")
+
+          var minVal = 0L
+          var maxVal = 0L
+
+          if (rsMinMax.next()) {
+            minVal = rsMinMax.getLong(1)
+            maxVal = rsMinMax.getLong(2)
+          }
+          rsMinMax.close()
+          stmtMinMax.close()
+
+          println(s"    Rango detectado: Columnas $minVal a $maxVal (Particiones: 12)")
+
+          // Lectura JDBC Paralelizada
+          val dataDf = spark.read.jdbc(
+              jdbcUrl,
+              tableQuery,       // Leemos la query, no la tabla directa
+              partitionCol,     // Usamos la columna numérica que acabamos de inventar
+              minVal,
+              maxVal,
+              12,               // 12 conexiones simultáneas
+              connectionProps
+            )
+            .drop("partition_id") // Borro la columna auxiliar
+            .persist(StorageLevel.MEMORY_ONLY)
+
+          // Forzamos la carga inmediata para liberar la conexión JDBC cuanto antes
+          val numRegistros = dataDf.count()
+          updateTriggerFlag(conn, idTrigger, 1, numRegistros)
+          println(s"\n--> Flag actualizado a 1 (Ingesta OK) - $numRegistros registros")
 
           // Cargar reglas desde semantic_layer ordenando por el campo field_position
           val semanticLayerDf = spark.read.jdbc(jdbcUrl, s"(SELECT * FROM public.semantic_layer WHERE id_type_table = '$idTypeTable' ORDER BY field_position) as r", connectionProps)
@@ -76,38 +119,36 @@ object App {
           // Columnas que forman parte de la PK
           val pkColumns = reglas.filter(r => Option(r.getAs[Boolean]("pk")).getOrElse(false)).map(_.getAs[String]("field_name")).toSeq
 
-          // =======================
-          // FASE 1: ESTRUCTURA
-          // =======================
-          // Empezamos las validaciones y actualizamos el flag a 11 para indicar que se está procesando
-          updateTriggerFlag(conn, idTrigger, 11)
-          println("--> Flag actualizado a 11 (Procesando...)")
-          println("\n--> [FASE 1] Validando estructura...")
+          try {
+            // =======================
+            // FASE 1: ESTRUCTURA
+            // =======================
+            // Empezamos las validaciones y actualizamos el flag a 11 para indicar que se está procesando
+            updateTriggerFlag(conn, idTrigger, 11)
+            println("\n--> Flag actualizado a 11 (Procesando...)")
+            println("\n--> [FASE 1] Validando estructura...")
 
-          // Validaciones de Tabla
-          val estructuraResult = TableValidator.validateStructure(dataDf, expectedColumns, hasHeader)
+            // Validaciones de Tabla (usa dataDf ya cacheado, no relee de JDBC)
+            val estructuraResult = TableValidator.validateStructure(dataDf, expectedColumns, hasHeader)
 
-          if (!estructuraResult.success) {
-            // Caso error
-            val errorMsg = estructuraResult.errorMessage.getOrElse("Error desconocido")
-            println(s"   FALLO: $errorMsg")
-            DbLogger.logError(props, idTrigger, tableName, "ALL_COLUMNS", errorMsg, "table_validation", "STRUCTURE_MISMATCH", "1")
-            // Actualizar: FLAG a 31
-            updateTriggerFlag(conn, idTrigger, 31)
-            println("   Flag actualizado a 31")
-          } else {
-            // Caso Éxito
-            println("   OK")
-            // Tomamos el DF resultante y lo persistimos para reutilizarlo en las fases siguientes sin releer de JDBC
-            val validatedDf = estructuraResult.dataFrame.get.persist(StorageLevel.MEMORY_AND_DISK)
-            // Forzamos la materialización del cache
-            // Calculamos el número de registros para actualizar el trigger_control
-            val numRegistros = validatedDf.count()
-            // Actualizar: FLAG a 12 y numRegistros
-            updateTriggerFlag(conn, idTrigger, 12, numRegistros)
-            println("--> Flag actualizado a 12")
+            if (!estructuraResult.success) {
+              // Caso error
+              val errorMsg = estructuraResult.errorMessage.getOrElse("Error desconocido")
+              println(s"   FALLO: $errorMsg")
+              DbLogger.logError(props, idTrigger, tableName, "ALL_COLUMNS", errorMsg, "table_validation", "STRUCTURE_MISMATCH", "1")
+              // Actualizar: FLAG a 31
+              updateTriggerFlag(conn, idTrigger, 31)
+              println("   Flag actualizado a 31")
+            } else {
+              // Caso Éxito
+              println("   OK")
+              // Tomamos el DF renombrado. No necesitamos persist adicional porque dataDf ya está cacheado
+              // y el rename es solo un cambio de metadatos (no recomputa)
+              val validatedDf = estructuraResult.dataFrame.get
+              // Actualizar: FLAG a 12
+              updateTriggerFlag(conn, idTrigger, 12)
+              println("   Flag actualizado a 12")
 
-            try {
               // =======================
               // FASE 2: VALIDACIONES TÉCNICAS
               // =======================
@@ -147,12 +188,12 @@ object App {
                 // Caso Error
                 logErrors(errores, faseActual, props, idTrigger, tableName)
                 updateTriggerFlag(conn, idTrigger, 32)
-                println(s"\n   Flag actualizado a 32")
+                println(s"   Flag actualizado a 32")
               } else {
                 // Caso Éxito
                 println("   OK")
                 updateTriggerFlag(conn, idTrigger, 13)
-                println("--> Flag actualizado a 13")
+                println("   Flag actualizado a 13")
 
                 // =======================
                 // FASE 3: INTEGRIDAD REFERENCIAL
@@ -165,12 +206,12 @@ object App {
                   // Caso Error
                   logErrors(errores, faseActual, props, idTrigger, tableName)
                   updateTriggerFlag(conn, idTrigger, 33)
-                  println(s"\n   Flag actualizado a 33")
+                  println(s"   Flag actualizado a 33")
                 } else {
                   //Caso Éxito
                   println("   OK")
                   updateTriggerFlag(conn, idTrigger, 14)
-                  println("--> Flag actualizado a 14")
+                  println("   Flag actualizado a 14")
 
                   // =======================
                   // FASE 4: VALIDACIONES FUNCIONALES
@@ -183,7 +224,7 @@ object App {
                     // Caso Error
                     logErrors(errores, faseActual, props, idTrigger, tableName)
                     updateTriggerFlag(conn, idTrigger, 34)
-                    println(s"\n   Flag actualizado a 34")
+                    println(s"   Flag actualizado a 34")
                   } else {
                     // Caso éxito
                     println("   OK")
@@ -192,10 +233,10 @@ object App {
                   }
                 }
               }
-            } finally {
-              // Liberamos el cache del DF al terminar con este trigger
-              validatedDf.unpersist()
             }
+          } finally {
+            // Liberamos el cache del DF al terminar con este trigger
+            dataDf.unpersist()
           }
         } catch {
           case e: Exception =>

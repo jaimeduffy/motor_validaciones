@@ -7,6 +7,7 @@ import scala.collection.Seq
 
 object TechnicalValidator {
 
+  // Valida que los valores cumplan el tipo indicado en data_type de semantic_layer
   def validateDataTypes(df: DataFrame, reglas: Array[Row]): List[ValidationError] = {
     val checks = reglas.flatMap { r =>
       val colName = r.getAs[String]("field_name")
@@ -16,6 +17,7 @@ object TechnicalValidator {
 
     if (checks.isEmpty) return List.empty
 
+    // Un solo select para validar todos los tipos de datos a la vez
     val result = df.select(checks.map(_._2): _*).first()
     checks.zipWithIndex.collect {
       case ((colName, _, dataType), idx) if result.getLong(idx) > 0 =>
@@ -27,6 +29,7 @@ object TechnicalValidator {
     }.toList
   }
 
+  // Construye el check de tipo para una columna según su dataType
   private def buildTypeCheck(colName: String, dataType: String): Option[(String, org.apache.spark.sql.Column, String)] = {
     val c = col(colName)
     val notEmpty = c.isNotNull && trim(c) =!= ""
@@ -44,6 +47,7 @@ object TechnicalValidator {
     }
   }
 
+  // Valida que las columnas con nullable=false no tengan valores nulos o vacíos
   def validateNulls(df: DataFrame, reglas: Array[Row]): List[ValidationError] = {
     val notNullCols = reglas.filter(r => !Option(r.getAs[Boolean]("nullable")).getOrElse(true))
       .map(_.getAs[String]("field_name"))
@@ -63,6 +67,7 @@ object TechnicalValidator {
     }.toList
   }
 
+  // Valida que la longitud de los valores no exceda el máximo definido en length de semantic_layer
   def validateLengths(df: DataFrame, reglas: Array[Row]): List[ValidationError] = {
     val colsWithLen = reglas.flatMap { r =>
       Option(r.getAs[String]("length")).filter(_.nonEmpty).map(l => (r.getAs[String]("field_name"), l.toInt))
@@ -83,6 +88,7 @@ object TechnicalValidator {
     }.toList
   }
 
+  // Valida que la combinación de columnas PK sea única en todo el DF
   def validatePrimaryKey(df: DataFrame, pkColumns: Seq[String]): List[ValidationError] = {
     if (pkColumns.isEmpty) return List.empty
 
