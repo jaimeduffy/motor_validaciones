@@ -33,7 +33,7 @@ object App {
     connectionProps.put("password", props.getProperty("jdbc.password"))
     connectionProps.put("driver", props.getProperty("jdbc.driver"))
 
-    // Optimización: fetchsize para reducir roundtrips en lecturas JDBC de Spark
+    // Optimización: fetchsize para reducir numero de lecturas JDBC
     connectionProps.put("fetchsize", "10000")
 
     println("\n--> Iniciando motor de validación ...")
@@ -53,7 +53,7 @@ object App {
         val tableName = row.getAs[String]("table_name")
         val idTypeTable = row.getAs[String]("id_type_table")
 
-        println(s"\n======================================================")
+        println(s"\n========================================================")
         println(s"  PROCESANDO TRIGGER ID: $idTrigger")
         println(s"  Tabla: $tableName | id_type_table: $idTypeTable")
         println(s"========================================================")
@@ -67,43 +67,39 @@ object App {
           val hasHeader = tableConfigDf.first().getAs[Boolean]("header")
           println(s"\n--> table_configuration cargado: header = $hasHeader")
 
-          // Cargar datos desde las tablas madres y persistir para evitar re-lecturas JDBC
-          // Particionar en 12 particiones por 12 nucleos lógicos de mi máquina
-          // Particionamos por column_x porque es no nulo y valores enteros
-          println(s"\n--> Leyendo de forma paralela por 'column_x'...")
+          // Cargar datos desde las tablas madres y persistir
+          // Particionar en 12 particiones por 12 núcleos lógicos de mi máquina
+          // Optimización: Usamos rangos de ctid para que PostgreSQL haga TID Scan
+          println(s"\n--> Leyendo y cacheando los datos de la tabla madre...")
 
-          // Creamos una tabla para limpiar 'column_x' y lo convierte en INT
-          // substring(column_x from 3) salta los 2 primeros caracteres ('_c')
-          val tableQuery = s"(SELECT *, CAST(substring(column_x FROM 3) AS INT) as partition_id FROM $tableName) as t"
-          val partitionCol = "partition_id"
+          // Obtenemos el número total de páginas de la tabla usando pg_relation_size
+          val stmtPages = conn.createStatement()
+          val rsPages = stmtPages.executeQuery(
+            s"SELECT pg_relation_size('$tableName') / current_setting('block_size')::bigint AS total_pages"
+          )
+          val totalPages = if (rsPages.next()) rsPages.getLong(1) else 0L
+          rsPages.close()
+          stmtPages.close()
 
-          // Calculamos MIN y MAX de esa columna
-          val stmtMinMax = conn.createStatement()
-          val rsMinMax = stmtMinMax.executeQuery(s"SELECT MIN(CAST(substring(column_x FROM 3) AS INT)), MAX(CAST(substring(column_x FROM 3) AS INT)) FROM $tableName")
+          val numPartitions = 12
+          val pagesPerPartition = math.max(1, (totalPages + numPartitions - 1) / numPartitions)
 
-          var minVal = 0L
-          var maxVal = 0L
+          println(s"    Páginas totales: $totalPages, ~$pagesPerPartition páginas por partición")
 
-          if (rsMinMax.next()) {
-            minVal = rsMinMax.getLong(1)
-            maxVal = rsMinMax.getLong(2)
-          }
-          rsMinMax.close()
-          stmtMinMax.close()
+          // Construimos predicados manuales con rangos de ctid para TID Scan
+          val predicates = (0 until numPartitions).map { i =>
+            val start = i * pagesPerPartition
+            val end = math.min((i + 1) * pagesPerPartition, totalPages + 1)
+            s"ctid >= '($start,0)'::tid AND ctid < '($end,0)'::tid"
+          }.toArray
 
-          println(s"    Rango detectado: Columnas $minVal a $maxVal (Particiones: 12)")
-
-          // Lectura JDBC Paralelizada
+          // Lectura JDBC Paralelizada con predicados por rangos de ctid
           val dataDf = spark.read.jdbc(
               jdbcUrl,
-              tableQuery,       // Leemos la query, no la tabla directa
-              partitionCol,     // Usamos la columna numérica que acabamos de inventar
-              minVal,
-              maxVal,
-              12,               // 12 conexiones simultáneas
+              tableName,
+              predicates,
               connectionProps
             )
-            .drop("partition_id") // Borro la columna auxiliar
             .persist(StorageLevel.MEMORY_ONLY)
 
           // Forzamos la carga inmediata para liberar la conexión JDBC cuanto antes
