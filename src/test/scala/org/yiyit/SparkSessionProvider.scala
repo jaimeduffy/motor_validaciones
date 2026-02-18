@@ -10,6 +10,7 @@ trait SparkSessionProvider extends BeforeAndAfterAll { this: Suite =>
       .appName("spark-test")
       .config("spark.sql.shuffle.partitions", "2")
       .config("spark.ui.enabled", "false")
+      .config("spark.sql.legacy.timeParserPolicy", "CORRECTED")
       .config("spark.driver.extraJavaOptions", "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED")
       .getOrCreate()
   }

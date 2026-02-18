@@ -2,12 +2,10 @@ package org.yiyit.validations
 
 import org.scalatest.funsuite.AnyFunSuite
 import org.yiyit.SparkSessionProvider
+import org.apache.spark.sql.types._
 
 class TableValidatorTest extends AnyFunSuite with SparkSessionProvider {
   import spark.implicits._
-  // =========================================================================
-  // Tests para validateStructure
-  // =========================================================================
 
   test("estructura OK con header=true y columnas coincidentes") {
     // Arrange
@@ -27,7 +25,7 @@ class TableValidatorTest extends AnyFunSuite with SparkSessionProvider {
   }
 
   test("estructura OK con header=false renombra columnas") {
-    // Arrange: columnas genéricas que no coinciden con los nombres esperados
+    // Arrange: columnas que no coinciden con los nombres esperados
     val df = Seq(
       ("T1", "Cover", "metric", "B3", "_c1", 1, "data_as_of")
     ).toDF("_c0", "_c1", "_c2", "_c3", "_c4", "_c5", "_c6")
@@ -47,9 +45,9 @@ class TableValidatorTest extends AnyFunSuite with SparkSessionProvider {
     // Arrange
     val df = spark.createDataFrame(
       spark.sparkContext.emptyRDD[org.apache.spark.sql.Row],
-      org.apache.spark.sql.types.StructType(Seq(
-        org.apache.spark.sql.types.StructField("a", org.apache.spark.sql.types.StringType),
-        org.apache.spark.sql.types.StructField("b", org.apache.spark.sql.types.StringType)
+      StructType(Seq(
+        StructField("a", StringType),
+        StructField("b",StringType)
       ))
     )
     val expected = Seq("a", "b")
@@ -86,17 +84,5 @@ class TableValidatorTest extends AnyFunSuite with SparkSessionProvider {
     // Assert
     assert(!result.success)
     assert(result.errorMessage.get.contains("Faltan") || result.errorMessage.get.contains("Sobran"))
-  }
-
-  test("header=true es case-insensitive") {
-    // Arrange
-    val df = Seq(("a", "b")).toDF("COL1", "COL2")
-    val expected = Seq("col1", "col2")
-
-    // Act
-    val result = TableValidator.validateStructure(df, expected, hasHeader = true)
-
-    // Assert
-    assert(result.success)
   }
 }

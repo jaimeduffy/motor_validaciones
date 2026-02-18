@@ -11,8 +11,8 @@ object TechnicalValidator {
   def validateDataTypes(df: DataFrame, reglas: Array[Row]): List[ValidationError] = {
     val checks = reglas.flatMap { r =>
       val colName = r.getAs[String]("field_name")
-      val dataType = Option(r.getAs[String]("data_type")).getOrElse("STRING").toUpperCase
-      buildTypeCheck(colName, dataType)
+      val rawType = Option(r.getAs[String]("data_type")).getOrElse("STRING")
+      buildTypeCheck(colName, rawType)
     }
 
     if (checks.isEmpty) return List.empty
@@ -30,18 +30,20 @@ object TechnicalValidator {
   }
 
   // Construye el check de tipo para una columna según su dataType
-  private def buildTypeCheck(colName: String, dataType: String): Option[(String, org.apache.spark.sql.Column, String)] = {
+  private def buildTypeCheck(colName: String, rawDataType: String): Option[(String, org.apache.spark.sql.Column, String)] = {
     val c = col(colName)
     val notEmpty = c.isNotNull && trim(c) =!= ""
+    val dataTypeUpper = rawDataType.trim.toUpperCase
 
-    dataType match {
+    dataTypeUpper match {
       case "STRING" => None
       case "INT" =>
         Some((colName, sum(when(notEmpty && !c.rlike("^-?[0-9]+$"), 1).otherwise(0)), "INT"))
       case d if d.startsWith("DECIMAL") =>
         Some((colName, sum(when(notEmpty && !c.rlike("^-?[0-9]+(\\.[0-9]+)?$"), 1).otherwise(0)), "DECIMAL"))
       case d if d.startsWith("DATE") =>
-        val format = d.replaceAll("DATE\\s*\\((.+)\\)", "$1").trim
+        // Extraer el formato del tipo ORIGINAL (sin toUpperCase) para preservar case del patrón
+        val format = rawDataType.trim.replaceAll("(?i)DATE\\s*\\((.+)\\)", "$1").trim
         Some((colName, sum(when(notEmpty && to_date(c, format).isNull, 1).otherwise(0)), "DATE"))
       case _ => None
     }

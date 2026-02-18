@@ -5,9 +5,7 @@ import org.yiyit.SparkSessionProvider
 
 class FunctionalValidatorTest extends AnyFunSuite with SparkSessionProvider {
   import spark.implicits._
-  // =========================================================================
-  // Helper: crear DF con la estructura de la tabla madre
-  // =========================================================================
+  // crear DF con la estructura de la tabla madre
   private def makeDF(rows: Seq[(String, String, String, String, String, Int, String)]) = {
     rows.toDF("template_code", "sheet", "data_type", "excel_cell", "column_x", "row_y", "data_name")
   }
