@@ -124,7 +124,7 @@ object App {
             println("\n--> Flag actualizado a 11 (Procesando...)")
             println("\n--> [FASE 1] Validando estructura...")
 
-            // Validaciones de Tabla (usa dataDf ya cacheado, no relee de JDBC)
+            // Validaciones de Tabla
             val estructuraResult = TableValidator.validateStructure(dataDf, expectedColumns, hasHeader)
 
             if (!estructuraResult.success) {
@@ -138,8 +138,7 @@ object App {
             } else {
               // Caso Éxito
               println("   OK")
-              // Tomamos el DF renombrado. No necesitamos persist adicional porque dataDf ya está cacheado
-              // y el rename es solo un cambio de metadatos (no recomputa)
+              // Tomamos el DF renombrado
               val validatedDf = estructuraResult.dataFrame.get
               // Actualizar: FLAG a 12
               updateTriggerFlag(conn, idTrigger, 12)
